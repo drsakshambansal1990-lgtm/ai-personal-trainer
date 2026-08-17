@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +22,7 @@ jobs:
           gradle-version: '8.13'
 
       - name: Build debug APK
+        working-directory: coach_android_m3/coach_android_m3
         env:
           ORG_GRADLE_PROJECT_PICOVOICE_ACCESS_KEY: ${{ secrets.PICOVOICE_ACCESS_KEY }}
           ORG_GRADLE_PROJECT_REALTIME_TOKEN_URL: ${{ secrets.REALTIME_TOKEN_URL }}
@@ -30,4 +32,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: coach-m3-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: coach_android_m3/coach_android_m3/app/build/outputs/apk/debug/app-debug.apk
