@@ -1,3 +1,4 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -24,6 +25,7 @@ android {
         buildConfigField("String", "OPENAI_REALTIME_MODEL", quoted(realtimeModel))
     }
 
+
     buildFeatures { buildConfig = true }
 
     buildTypes {
@@ -35,8 +37,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions { jvmTarget = "17" }
 }
+
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.fromTarget("17")
+    }
+}
+
 
 dependencies {
     implementation("ai.picovoice:porcupine-android:4.0.2")
