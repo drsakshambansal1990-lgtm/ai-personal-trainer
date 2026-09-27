@@ -36,6 +36,10 @@ class WorkoutForegroundService : Service() {
     private var conversationActive = false
     private var restTickerStarted = false
     private var lastTickerElapsedRealtime = 0L
+    private var lastActivationElapsedRealtime = 0L
+    private var turnSerial = 0
+    private var returnToWakeTurnId = 0
+    private var turnTimeoutRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -88,16 +92,34 @@ class WorkoutForegroundService : Service() {
     }
 
     private fun activateCoach(source: String) {
-        if (conversationActive) return
+        val now = SystemClock.elapsedRealtime()
+
+        // Some headsets deliver the same physical press through both the media-button
+        // callback and onPlay/onPause. Treat near-simultaneous activations as one turn.
+        if (conversationActive && now - lastActivationElapsedRealtime < 700L) return
+
+        // A deliberate second Talk press should recover a stuck turn immediately.
+        if (conversationActive) cancelActiveTurn()
+
+        lastActivationElapsedRealtime = now
+        val turnId = ++turnSerial
         conversationActive = true
         wakeWord?.stop()
+        speaker.stop()
+        handler.removeCallbacks(returnToWakeRunnable)
+        clearTurnTimeout()
+
         ToneGenerator(AudioManager.STREAM_MUSIC, 60).apply {
             startTone(ToneGenerator.TONE_PROP_BEEP, 110)
             handler.postDelayed({ release() }, 180)
         }
-        updateNotification("Coach activated by $source · listening")
+        publishStatus("Coach activated by $source · listening")
+
+        val useRealtime = BuildConfig.REALTIME_TOKEN_URL.isNotBlank()
+        armTurnTimeout(turnId, if (useRealtime) 25_000L else 12_000L)
         handler.postDelayed({
-            if (BuildConfig.REALTIME_TOKEN_URL.isNotBlank()) startRealtimeTurn() else startFallbackTurn()
+            if (!isCurrentTurn(turnId)) return@postDelayed
+            if (useRealtime) startRealtimeTurn(turnId) else startFallbackTurn(turnId)
         }, 180)
     }
 
@@ -146,46 +168,116 @@ class WorkoutForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= 33) getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
         else getParcelableExtra(Intent.EXTRA_KEY_EVENT)
 
-    private fun startRealtimeTurn() {
+    private fun startRealtimeTurn(turnId: Int) {
         realtime?.disconnect()
         realtime = RealtimeWebRtcTrainerClient(
             this,
             RealtimeToolRouter(),
-            onStatus = { status -> handler.post { updateNotification(status); broadcastState(status = status) } },
-            onRoute = { route -> handler.post { broadcastState(route = route) } },
-            onStateChanged = { handler.post { broadcastState() } },
-            onFinalTurn = { handler.post { scheduleReturnToWakeWord() } },
+            onStatus = { status -> handler.post {
+                if (isCurrentTurn(turnId)) publishStatus(status)
+            } },
+            onRoute = { route -> handler.post {
+                if (isCurrentTurn(turnId)) broadcastState(route = route)
+            } },
+            onStateChanged = { handler.post {
+                if (isCurrentTurn(turnId)) broadcastState()
+            } },
+            onFinalTurn = { handler.post {
+                if (isCurrentTurn(turnId)) scheduleReturnToWakeWord(turnId)
+            } },
         ).also { it.connect() }
     }
 
-    private fun startFallbackTurn() {
+    private fun startFallbackTurn(turnId: Int) {
         fallbackRecognizer?.stop()
         fallbackRecognizer = OneShotCommandRecognizer(
             this,
             onResult = { raw -> handler.post {
-                val reply = WorkoutSession.command(raw)
-                speaker.say(reply.spokenText)
+                if (!isCurrentTurn(turnId)) return@post
+                fallbackRecognizer = null
+                publishStatus("Heard: $raw")
+                val reply = runCatching { WorkoutSession.command(raw) }.getOrElse {
+                    publishStatus("That command can't be used right now")
+                    speaker.say("That command can't be used right now.") {
+                        handler.post { finishTurn(turnId) }
+                    }
+                    return@post
+                }
                 broadcastState()
-                scheduleReturnToWakeWord(2200)
+                clearTurnTimeout()
+                speaker.say(reply.spokenText) {
+                    handler.post { finishTurn(turnId) }
+                }
             } },
             onError = { message -> handler.post {
-                speaker.say("I didn't catch that. Say Coach and try again.")
-                updateNotification(message)
-                scheduleReturnToWakeWord(1400)
+                if (!isCurrentTurn(turnId)) return@post
+                fallbackRecognizer = null
+                publishStatus(message)
+                clearTurnTimeout()
+                speaker.say("I didn't catch that.") {
+                    handler.post { finishTurn(turnId) }
+                }
+            } },
+            onStatus = { status -> handler.post {
+                if (isCurrentTurn(turnId)) publishStatus(status)
             } },
         ).also { it.start() }
     }
 
-    private fun scheduleReturnToWakeWord(delayMs: Long = if (WorkoutSession.snapshot().state == WorkoutState.AWAITING_RPE) 12_000 else 5_000) {
+    private fun scheduleReturnToWakeWord(turnId: Int, delayMs: Long = if (WorkoutSession.snapshot().state == WorkoutState.AWAITING_RPE) 12_000 else 5_000) {
+        clearTurnTimeout()
         handler.removeCallbacks(returnToWakeRunnable)
+        returnToWakeTurnId = turnId
         handler.postDelayed(returnToWakeRunnable, delayMs)
     }
 
     private val returnToWakeRunnable = Runnable {
+        val turnId = returnToWakeTurnId
+        if (isCurrentTurn(turnId)) finishTurn(turnId)
+    }
+
+    private fun finishTurn(turnId: Int) {
+        if (!isCurrentTurn(turnId)) return
+        clearTurnTimeout()
+        handler.removeCallbacks(returnToWakeRunnable)
         realtime?.disconnect(); realtime = null
         fallbackRecognizer?.stop(); fallbackRecognizer = null
         conversationActive = false
         startWakeWordIfPossible()
+    }
+
+    private fun cancelActiveTurn() {
+        clearTurnTimeout()
+        handler.removeCallbacks(returnToWakeRunnable)
+        realtime?.disconnect(); realtime = null
+        fallbackRecognizer?.stop(); fallbackRecognizer = null
+        conversationActive = false
+    }
+
+    private fun armTurnTimeout(turnId: Int, delayMs: Long) {
+        clearTurnTimeout()
+        val runnable = Runnable {
+            if (!isCurrentTurn(turnId)) return@Runnable
+            fallbackRecognizer?.stop(); fallbackRecognizer = null
+            realtime?.disconnect(); realtime = null
+            conversationActive = false
+            publishStatus("Talk timed out · tap Talk to retry")
+            startWakeWordIfPossible()
+        }
+        turnTimeoutRunnable = runnable
+        handler.postDelayed(runnable, delayMs)
+    }
+
+    private fun clearTurnTimeout() {
+        turnTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        turnTimeoutRunnable = null
+    }
+
+    private fun isCurrentTurn(turnId: Int) = conversationActive && turnId == turnSerial
+
+    private fun publishStatus(message: String) {
+        updateNotification(message)
+        broadcastState(status = message)
     }
 
     private fun startRestTicker() {
@@ -202,15 +294,14 @@ class WorkoutForegroundService : Service() {
                     val reply = WorkoutSession.tickRest(elapsedSeconds)
                     val after = WorkoutSession.snapshot()
 
-                    // Keep the on-screen countdown truly live. Previously we only
-                    // broadcast when tickRest() returned REST_COMPLETE, so the UI
-                    // could display a frozen rest time until it suddenly hit zero.
                     if (before.state == WorkoutState.RESTING || after.state == WorkoutState.RESTING || reply != null) {
                         broadcastState()
                     }
 
                     if (reply != null) {
-                        speaker.say(reply.spokenText)
+                        // Never speak a timer cue into a microphone that is actively
+                        // listening to the athlete; it can be mistaken for user speech.
+                        if (!conversationActive) speaker.say(reply.spokenText)
                         realtime?.takeIf { it.connected }?.sendWorkoutEvent(
                             reply.event,
                             RealtimeToolRouter().snapshotJson()
@@ -218,8 +309,6 @@ class WorkoutForegroundService : Service() {
                     }
                 }
 
-                // Check more frequently than once a second, but decrement from
-                // elapsedRealtime so delayed callbacks do not make the timer drift.
                 handler.postDelayed(this, 250)
             }
         })
@@ -233,6 +322,7 @@ class WorkoutForegroundService : Service() {
     }
 
     private fun shutdownWorkoutMode() {
+        clearTurnTimeout()
         handler.removeCallbacks(returnToWakeRunnable)
         realtime?.disconnect(); realtime = null
         fallbackRecognizer?.stop(); fallbackRecognizer = null
@@ -240,6 +330,7 @@ class WorkoutForegroundService : Service() {
         mediaSession?.isActive = false
         mediaSession?.release(); mediaSession = null
         conversationActive = false
+        speaker.stop()
         speaker.shutdown()
     }
 
