@@ -16,13 +16,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Native Android OpenAI Realtime transport using WebRTC.
- *
- * Audio travels as a WebRTC media track. Realtime client/server events travel
- * over the `oai-events` data channel. The normal OpenAI API key never enters
- * the APK; a companion backend returns only a short-lived client secret.
- */
+/** Native Android OpenAI Realtime transport using WebRTC. */
 class RealtimeWebRtcTrainerClient(
     private val context: Context,
     private val toolRouter: RealtimeToolRouter,
@@ -35,6 +29,7 @@ class RealtimeWebRtcTrainerClient(
     private val main = Handler(Looper.getMainLooper())
     private val http = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
     private val isConnected = AtomicBoolean(false)
+    private val responseActive = AtomicBoolean(false)
     override val connected: Boolean get() = isConnected.get()
 
     private var peerFactory: PeerConnectionFactory? = null
@@ -101,8 +96,6 @@ class RealtimeWebRtcTrainerClient(
                     localOffer = desc
                     peer?.setLocalDescription(object : SimpleSdpObserver() {
                         override fun onSetSuccess() {
-                            // Give native ICE a short window to add candidates. If ICE completes
-                            // earlier, PeerObserver posts immediately.
                             main.postDelayed({ postOfferIfReady(token) }, 900)
                         }
                         override fun onSetFailure(error: String) = fail("Local SDP failed: $error")
@@ -200,8 +193,6 @@ class RealtimeWebRtcTrainerClient(
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
         override fun onDataChannel(channel: DataChannel) {
-            // We create the canonical oai-events channel, but accept a remote one
-            // defensively if the implementation exposes it this way.
             if (dataChannel == null) {
                 dataChannel = channel
                 channel.registerObserver(dataObserver)
@@ -226,12 +217,19 @@ class RealtimeWebRtcTrainerClient(
     private fun handleServerEvent(raw: String) {
         val event = runCatching { JSONObject(raw) }.getOrNull() ?: return
         when (event.optString("type")) {
+            "response.created" -> responseActive.set(true)
             "input_audio_buffer.speech_started" -> {
-                // Request immediate barge-in. WebRTC carries the media; the data channel
-                // carries the control event.
-                sendJson(JSONObject().put("type", "response.cancel"))
+                // Only cancel when the model is actually responding. Previously every
+                // speech-start emitted response.cancel, which could create noisy errors
+                // and unstable turn state even while Coach was simply listening.
+                if (responseActive.compareAndSet(true, false)) {
+                    sendJson(JSONObject().put("type", "response.cancel"))
+                }
             }
-            "response.done" -> handleResponseDone(event)
+            "response.done" -> {
+                responseActive.set(false)
+                handleResponseDone(event)
+            }
             "error" -> onStatus("Realtime error: ${event.optJSONObject("error")?.optString("message") ?: "unknown"}")
         }
     }
@@ -279,6 +277,7 @@ class RealtimeWebRtcTrainerClient(
 
     override fun disconnect() {
         isConnected.set(false)
+        responseActive.set(false)
         runCatching { dataChannel?.unregisterObserver() }
         runCatching { dataChannel?.close() }
         dataChannel = null
