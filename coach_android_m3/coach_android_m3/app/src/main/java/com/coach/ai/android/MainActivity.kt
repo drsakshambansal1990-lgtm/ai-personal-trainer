@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.*
@@ -17,7 +19,6 @@ import com.coach.ai.core.*
 
 class MainActivity : Activity() {
     private lateinit var speaker: CoachSpeaker
-    private lateinit var voice: VoiceRecognizer
     private lateinit var store: WorkoutStore
 
     private lateinit var statusText: TextView
@@ -31,16 +32,31 @@ class MainActivity : Activity() {
     private lateinit var actionButton: Button
     private lateinit var listenButton: Button
 
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val uiRefreshRunnable = object : Runnable {
+        override fun run() {
+            if (!::statusText.isInitialized) return
+            val snapshot = WorkoutSession.snapshot()
+            render(snapshot)
+            uiHandler.postDelayed(
+                this,
+                if (snapshot.state == WorkoutState.RESTING) 250L else 1000L
+            )
+        }
+    }
+
     private val workoutReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             render(WorkoutSession.snapshot())
+            intent?.getStringExtra(WorkoutForegroundService.EXTRA_SERVICE_STATUS)?.let { status ->
+                Toast.makeText(this@MainActivity, status, Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         speaker = CoachSpeaker(this)
-        voice = VoiceRecognizer(this)
         store = WorkoutStore(this)
         setContentView(buildUi())
         render(WorkoutSession.snapshot())
@@ -121,9 +137,9 @@ class MainActivity : Activity() {
             setPadding(0, dp(12), 0, 0)
         }
         listenButton = Button(this).apply {
-            text = "🎙 SPEAK"
+            text = "🎙 TALK"
             isEnabled = false
-            setOnClickListener { voice.start() }
+            setOnClickListener { activateCoachTalk() }
         }
         micRow.addView(listenButton, LinearLayout.LayoutParams(0, dp(52), 1f))
 
@@ -212,6 +228,24 @@ class MainActivity : Activity() {
         render(reply.snapshot)
     }
 
+    private fun activateCoachTalk() {
+        if (!hasAudioPermission()) {
+            requestRuntimePermissions()
+            Toast.makeText(this, "Microphone permission is needed for Talk.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (WorkoutSession.snapshot().state == WorkoutState.NOT_STARTED) {
+            Toast.makeText(this, "Start the workout first.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // Use the same foreground-service turn pipeline as notification Talk and
+        // headset activation. This removes the old second recognizer path.
+        speaker.stop()
+        val intent = Intent(this, WorkoutForegroundService::class.java)
+            .setAction(WorkoutForegroundService.ACTION_ACTIVATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+    }
+
     private fun handleCommand(raw: String) {
         appendUser(raw)
         val cmd = TrainerCommandParser.parse(raw)
@@ -261,14 +295,6 @@ class MainActivity : Activity() {
         transcriptText.append("\nCoach: $text")
     }
 
-    @Deprecated("Legacy result path is sufficient for this milestone")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VoiceRecognizer.REQUEST_CODE && resultCode == RESULT_OK) {
-            voice.resultText(data)?.let { handleCommand(it) }
-        }
-    }
-
     private fun requestRuntimePermissions() {
         val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.POST_NOTIFICATIONS
@@ -287,14 +313,18 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(workoutReceiver, filter, RECEIVER_NOT_EXPORTED)
         else @Suppress("DEPRECATION") registerReceiver(workoutReceiver, filter)
         render(WorkoutSession.snapshot())
+        uiHandler.removeCallbacks(uiRefreshRunnable)
+        uiHandler.post(uiRefreshRunnable)
     }
 
     override fun onStop() {
+        uiHandler.removeCallbacks(uiRefreshRunnable)
         runCatching { unregisterReceiver(workoutReceiver) }
         super.onStop()
     }
 
     override fun onDestroy() {
+        uiHandler.removeCallbacks(uiRefreshRunnable)
         speaker.shutdown()
         super.onDestroy()
     }

@@ -17,14 +17,13 @@ android {
         applicationId = "com.coach.ai"
         minSdk = 28
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 6
+        versionName = "0.4.0-alpha02"
 
         buildConfigField("String", "PICOVOICE_ACCESS_KEY", quoted(picovoiceAccessKey))
         buildConfigField("String", "REALTIME_TOKEN_URL", quoted(realtimeTokenUrl))
         buildConfigField("String", "OPENAI_REALTIME_MODEL", quoted(realtimeModel))
     }
-
 
     buildFeatures { buildConfig = true }
 
@@ -36,16 +35,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
 }
-
 
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.fromTarget("17")
     }
 }
-
 
 dependencies {
     implementation("ai.picovoice:porcupine-android:4.0.2")
