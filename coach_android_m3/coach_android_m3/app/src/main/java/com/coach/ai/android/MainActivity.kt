@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.*
@@ -30,6 +32,19 @@ class MainActivity : Activity() {
     private lateinit var startButton: Button
     private lateinit var actionButton: Button
     private lateinit var listenButton: Button
+
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val uiRefreshRunnable = object : Runnable {
+        override fun run() {
+            if (!::statusText.isInitialized) return
+            val snapshot = WorkoutSession.snapshot()
+            render(snapshot)
+            uiHandler.postDelayed(
+                this,
+                if (snapshot.state == WorkoutState.RESTING) 250L else 1000L
+            )
+        }
+    }
 
     private val workoutReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -287,14 +302,18 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(workoutReceiver, filter, RECEIVER_NOT_EXPORTED)
         else @Suppress("DEPRECATION") registerReceiver(workoutReceiver, filter)
         render(WorkoutSession.snapshot())
+        uiHandler.removeCallbacks(uiRefreshRunnable)
+        uiHandler.post(uiRefreshRunnable)
     }
 
     override fun onStop() {
+        uiHandler.removeCallbacks(uiRefreshRunnable)
         runCatching { unregisterReceiver(workoutReceiver) }
         super.onStop()
     }
 
     override fun onDestroy() {
+        uiHandler.removeCallbacks(uiRefreshRunnable)
         speaker.shutdown()
         super.onDestroy()
     }
