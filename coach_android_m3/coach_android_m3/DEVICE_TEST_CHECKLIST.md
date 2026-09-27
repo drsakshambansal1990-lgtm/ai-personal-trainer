@@ -1,4 +1,4 @@
-# Coach M3 — Device test checklist
+# Coach M4 alpha02 — Device test checklist
 
 ## Install / permissions
 - [ ] Install debug APK.
@@ -6,6 +6,7 @@
 - [ ] Grant notifications permission where requested.
 - [ ] Grant nearby/Bluetooth connection permission where requested.
 - [ ] Confirm persistent `Coach · Workout Mode` notification after START WORKOUT.
+- [ ] Confirm notification shows both `Talk` and `Stop` actions.
 
 ## Wake word
 - [ ] Screen on: say custom `Coach`; confirm chime.
@@ -13,8 +14,16 @@
 - [ ] Confirm unrelated speech does not open a Realtime session.
 - [ ] Confirm local wake-word listener resumes after a live turn ends.
 
-## Bluetooth / earbuds
+## Earbud / media-button activation
 - [ ] Connect Bluetooth earbuds before START WORKOUT.
+- [ ] With screen on, press play/pause once; confirm Coach chime and listening state.
+- [ ] With screen locked, press play/pause once; confirm Coach activates.
+- [ ] Confirm the notification `Talk` action activates Coach without opening the app.
+- [ ] Confirm a second press while Coach is already listening does not start a duplicate session.
+- [ ] Check whether play/pause is taken away from Spotify/YouTube Music while Workout Mode is active.
+- [ ] Stop Workout Mode and confirm normal media-button behavior returns.
+
+## Bluetooth / audio route
 - [ ] Activate Coach and confirm reply is heard in earbuds.
 - [ ] Confirm trainer hears speech through the intended communication route.
 - [ ] Disconnect earbuds mid-session; confirm graceful fallback to handset.
@@ -39,6 +48,7 @@
 
 ## Noisy-gym test
 - [ ] Wake-word false-positive rate acceptable.
+- [ ] Earbud-button activation remains reliable in loud background audio.
 - [ ] Speech recognition usable with music/background voices.
 - [ ] Trainer response latency acceptable.
 - [ ] Barge-in stops/shortens Coach response appropriately.
