@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.view.KeyEvent
 import com.coach.ai.core.WorkoutState
 
@@ -34,6 +35,7 @@ class WorkoutForegroundService : Service() {
     private var mediaSession: MediaSession? = null
     private var conversationActive = false
     private var restTickerStarted = false
+    private var lastTickerElapsedRealtime = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -188,14 +190,37 @@ class WorkoutForegroundService : Service() {
 
     private fun startRestTicker() {
         restTickerStarted = true
+        lastTickerElapsedRealtime = SystemClock.elapsedRealtime()
         handler.post(object : Runnable {
             override fun run() {
-                val reply = WorkoutSession.tickRest(1)
-                if (reply != null) {
-                    speaker.say(reply.spokenText)
-                    broadcastState()
+                val now = SystemClock.elapsedRealtime()
+                val elapsedSeconds = ((now - lastTickerElapsedRealtime) / 1000L).toInt()
+
+                if (elapsedSeconds > 0) {
+                    lastTickerElapsedRealtime += elapsedSeconds * 1000L
+                    val before = WorkoutSession.snapshot()
+                    val reply = WorkoutSession.tickRest(elapsedSeconds)
+                    val after = WorkoutSession.snapshot()
+
+                    // Keep the on-screen countdown truly live. Previously we only
+                    // broadcast when tickRest() returned REST_COMPLETE, so the UI
+                    // could display a frozen rest time until it suddenly hit zero.
+                    if (before.state == WorkoutState.RESTING || after.state == WorkoutState.RESTING || reply != null) {
+                        broadcastState()
+                    }
+
+                    if (reply != null) {
+                        speaker.say(reply.spokenText)
+                        realtime?.takeIf { it.connected }?.sendWorkoutEvent(
+                            reply.event,
+                            RealtimeToolRouter().snapshotJson()
+                        )
+                    }
                 }
-                handler.postDelayed(this, 1000)
+
+                // Check more frequently than once a second, but decrement from
+                // elapsedRealtime so delayed callbacks do not make the timer drift.
+                handler.postDelayed(this, 250)
             }
         })
     }
