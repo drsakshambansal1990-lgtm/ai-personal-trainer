@@ -111,8 +111,8 @@ class WorkoutForegroundService : Service() {
 
         mediaSession = MediaSession(this, "CoachWorkout").apply {
             setCallback(object : MediaSession.Callback() {
-                override fun onMediaButtonEvent(mediaButtonIntent: Intent?): Boolean {
-                    val event = mediaButtonIntent?.keyEventCompat() ?: return false
+                override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                    val event = mediaButtonIntent.keyEventCompat() ?: return false
                     if (event.action != KeyEvent.ACTION_DOWN) return true
                     return when (event.keyCode) {
                         KeyEvent.KEYCODE_HEADSETHOOK,
